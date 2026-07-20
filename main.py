@@ -2,24 +2,58 @@
 """
 Модуль для проверки конфигурации Check Point шлюзов.
 Проверяет наличие строки "add allowed-client host any-host" в конфигурации.
+Вывод данных в формате JSON для Splunk.
 """
 
+import json
 from typing import Dict, List, Optional
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from services.checkpoint_ssh import CheckPointSSH
 from services.netbox_handler import NetBoxHandler
+from services.splunk_api import SplunkHEC
+from config.config import settings, splunk_creds
 from config.setup_logger import LOG
+
+
+CHECK_NAME = "allowed-client-any-host"
+SEARCH_STRING = "add allowed-client host any-host"
 
 
 @dataclass
 class CheckResult:
     """Результат проверки конфигурации шлюза."""
+    host: str
     gateway_ip: str
     has_any_host: bool
-    config_snippet: Optional[str] = None
     error: Optional[str] = None
+
+
+def get_hostname(chp: CheckPointSSH) -> str:
+    """
+    Получает hostname шлюза Check Point.
+    
+    Args:
+        chp: Объект подключения к шлюзу
+        
+    Returns:
+        Имя хоста шлюза
+    """
+    try:
+        # Выполняем команду hostname
+        output = chp.send_show_command("hostname")
+        # Извлекаем hostname из вывода (первая строка без управляющих символов)
+        lines = [line.strip() for line in output.split('\n') if line.strip()]
+        for line in lines:
+            # Ищем строку, которая не содержит командных символов
+            if line and not line.startswith('>') and not line.startswith('#'):
+                return line.strip()
+        # Если не удалось определить, возвращаем IP
+        return chp.ip
+    except Exception as e:
+        LOG.warning(f"Не удалось получить hostname для {chp.ip}: {e}")
+        return chp.ip
 
 
 def check_gateway_config(gateway_ip: str) -> CheckResult:
@@ -34,40 +68,56 @@ def check_gateway_config(gateway_ip: str) -> CheckResult:
     """
     try:
         with CheckPointSSH(gateway_ip) as chp:
+            # Получаем hostname шлюза
+            hostname = get_hostname(chp)
+            LOG.info(f"Подключение к шлюзу {hostname} ({gateway_ip})")
+            
+            # Получаем конфигурацию
             config = chp.cfg
-            LOG.info(f"Получена конфигурация с {gateway_ip}, длина: {len(config)} символов")
+            LOG.info(f"Получена конфигурация с {hostname}, длина: {len(config)} символов")
             
-            # Ищем строку "add allowed-client host any-host" в конфигурации
-            search_string = "add allowed-client host any-host"
-            has_any_host = search_string in config
+            # Проверяем наличие строки в конфигурации
+            has_any_host = SEARCH_STRING in config
             
-            # Если строка найдена, извлекаем контекст (несколько строк до и после)
-            config_snippet = None
             if has_any_host:
-                lines = config.split('\n')
-                for i, line in enumerate(lines):
-                    if search_string in line:
-                        # Берем 3 строки до и 3 после найденной строки
-                        start = max(0, i - 3)
-                        end = min(len(lines), i + 4)
-                        context_lines = lines[start:end]
-                        config_snippet = '\n'.join(context_lines)
-                        LOG.info(f"Найдена строка '{search_string}' в конфигурации {gateway_ip}")
-                        break
+                LOG.info(f"Строка '{SEARCH_STRING}' найдена в конфигурации {hostname}")
+            else:
+                LOG.info(f"Строка '{SEARCH_STRING}' НЕ найдена в конфигурации {hostname}")
             
             return CheckResult(
+                host=hostname,
                 gateway_ip=gateway_ip,
-                has_any_host=has_any_host,
-                config_snippet=config_snippet
+                has_any_host=has_any_host
             )
             
     except Exception as e:
         LOG.error(f"Ошибка при подключении к {gateway_ip}: {e}")
         return CheckResult(
+            host=gateway_ip,
             gateway_ip=gateway_ip,
             has_any_host=False,
             error=str(e)
         )
+
+
+def get_gateways_from_netbox(device_key: str = 'checkpoint') -> List[str]:
+    """
+    Получает список IP-адресов шлюзов из NetBox.
+    
+    Args:
+        device_key: Ключ для поиска устройств в NetBox (по умолчанию 'checkpoint')
+        
+    Returns:
+        Список IP-адресов шлюзов
+    """
+    try:
+        netbox = NetBoxHandler()
+        ips = netbox.get_ipaddresses(device_key)
+        LOG.info(f"Получено {len(ips)} IP-адресов из NetBox")
+        return ips
+    except Exception as e:
+        LOG.error(f"Ошибка при получении IP-адресов из NetBox: {e}")
+        return []
 
 
 def check_all_gateways(gateway_ips: List[str], max_workers: int = 10) -> List[CheckResult]:
@@ -101,6 +151,7 @@ def check_all_gateways(gateway_ips: List[str], max_workers: int = 10) -> List[Ch
             except Exception as e:
                 LOG.error(f"Ошибка при проверке шлюза {ip}: {e}")
                 results.append(CheckResult(
+                    host=ip,
                     gateway_ip=ip,
                     has_any_host=False,
                     error=str(e)
@@ -109,79 +160,58 @@ def check_all_gateways(gateway_ips: List[str], max_workers: int = 10) -> List[Ch
     return results
 
 
-def get_gateways_from_netbox(device_key: str = 'checkpoint') -> List[str]:
+def generate_splunk_output(results: List[CheckResult]) -> List[Dict]:
     """
-    Получает список IP-адресов шлюзов из NetBox.
-    
-    Args:
-        device_key: Ключ для поиска устройств в NetBox (по умолчанию 'checkpoint')
-        
-    Returns:
-        Список IP-адресов шлюзов
-    """
-    try:
-        netbox = NetBoxHandler()
-        ips = netbox.get_ipaddresses(device_key)
-        LOG.info(f"Получено {len(ips)} IP-адресов из NetBox")
-        return ips
-    except Exception as e:
-        LOG.error(f"Ошибка при получении IP-адресов из NetBox: {e}")
-        return []
-
-
-def generate_report(results: List[CheckResult]) -> str:
-    """
-    Генерирует текстовый отчет по результатам проверки.
+    Генерирует данные в формате для Splunk.
     
     Args:
         results: Список результатов проверки
         
     Returns:
-        Строка с отчетом
+        Список словарей для Splunk
     """
-    report_lines = ["=" * 60, "ОТЧЕТ ПО ПРОВЕРКЕ КОНФИГУРАЦИИ CHECK POINT", "=" * 60, ""]
+    output = []
+    for result in results:
+        # Определяем статус: ok если строка найдена, defect если не найдена
+        status = "ok" if result.has_any_host else "defect"
+        
+        entry = {
+            "host": result.host,
+            "check": CHECK_NAME,
+            "status": status
+        }
+        output.append(entry)
     
-    gateways_with_any_host = [r for r in results if r.has_any_host]
-    gateways_without_any_host = [r for r in results if not r.has_any_host and not r.error]
-    gateways_with_errors = [r for r in results if r.error]
+    return output
+
+
+def send_to_splunk(results: List[CheckResult]) -> bool:
+    """
+    Отправляет результаты проверки в Splunk.
     
-    report_lines.append(f"Всего проверено шлюзов: {len(results)}")
-    report_lines.append(f"Строка 'add allowed-client host any-host' НАЙДЕНА: {len(gateways_with_any_host)}")
-    report_lines.append(f"Строка НЕ найдена: {len(gateways_without_any_host)}")
-    report_lines.append(f"Ошибки подключения: {len(gateways_with_errors)}")
-    report_lines.append("")
-    
-    if gateways_with_any_host:
-        report_lines.append("-" * 60)
-        report_lines.append("ШЛЮЗЫ С 'add allowed-client host any-host':")
-        report_lines.append("-" * 60)
-        for r in gateways_with_any_host:
-            report_lines.append(f"\n[+] {r.gateway_ip}")
-            if r.config_snippet:
-                report_lines.append("  Контекст:")
-                for line in r.config_snippet.split('\n'):
-                    report_lines.append(f"    {line}")
-    
-    if gateways_without_any_host:
-        report_lines.append("")
-        report_lines.append("-" * 60)
-        report_lines.append("ШЛЮЗЫ БЕЗ 'add allowed-client host any-host':")
-        report_lines.append("-" * 60)
-        for r in gateways_without_any_host:
-            report_lines.append(f"[-] {r.gateway_ip}")
-    
-    if gateways_with_errors:
-        report_lines.append("")
-        report_lines.append("-" * 60)
-        report_lines.append("ОШИБКИ ПОДКЛЮЧЕНИЯ:")
-        report_lines.append("-" * 60)
-        for r in gateways_with_errors:
-            report_lines.append(f"[!] {r.gateway_ip}: {r.error}")
-    
-    report_lines.append("")
-    report_lines.append("=" * 60)
-    
-    return '\n'.join(report_lines)
+    Args:
+        results: Список результатов проверки
+        
+    Returns:
+        True если отправка успешна, False в противном случае
+    """
+    try:
+        splunk = SplunkHEC(**splunk_creds())
+        splunk_data = generate_splunk_output(results)
+        
+        for event in splunk_data:
+            response = splunk.send(event)
+            if response and response.status_code == 200:
+                LOG.info(f"Успешно отправлено в Splunk: {event['host']} - {event['status']}")
+            else:
+                LOG.error(f"Ошибка отправки в Splunk для {event['host']}: {response.text if response else 'No response'}")
+        
+        LOG.info(f"Всего отправлено событий в Splunk: {SplunkHEC.sent_counter}")
+        return True
+        
+    except Exception as e:
+        LOG.error(f"Ошибка при отправке в Splunk: {e}")
+        return False
 
 
 def main():
@@ -200,9 +230,14 @@ def main():
     # Проверяем конфигурацию всех шлюзов
     results = check_all_gateways(gateway_ips)
     
-    # Генерируем и выводим отчет
-    report = generate_report(results)
-    print(report)
+    # Генерируем вывод в формате Splunk
+    splunk_data = generate_splunk_output(results)
+    
+    # Выводим результат в JSON формате
+    print(json.dumps(splunk_data, indent=2, ensure_ascii=False))
+    
+    # Отправляем данные в Splunk
+    send_to_splunk(results)
     
     LOG.info("Проверка конфигурации завершена")
 
