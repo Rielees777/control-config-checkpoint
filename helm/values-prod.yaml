@@ -7,9 +7,6 @@ containers:
     repository: ""
     tag: ""
     runAsUser: 65534
-    ports:
-      - name: http
-        containerPort: 8080
     requests:
       memory: "100Mi"
       cpu: "100m"

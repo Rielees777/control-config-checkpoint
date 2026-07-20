@@ -3,16 +3,16 @@
 # Для обсуждения доработок шаблонов прошу связаться с group_DevOpsIVR@sovcombank.ru или по форме DevOps ДБТ > Консультация https://pyrus.sovcombank.ru/t#uf340482
 ##########
 include:
-  - component: gitlab.sovcombank.group/devops-dbt/components/templates/default@1.13.0
+  - component: gitlab.sovcombank.group/devops-dbt/components/templates/default@2.6.2
   - component: gitlab.sovcombank.group/devops-dbt/components/stands/test@1.1.0
     inputs:
       context: "TEST_NEW"
   - component: gitlab.sovcombank.group/devops-dbt/components/stands/prod@1.1.0
     inputs:
       context: "BACK"
-  - component: gitlab.sovcombank.group/devops-dbt/components/templates/build@1.13.0
-  - component: gitlab.sovcombank.group/devops-dbt/components/templates/scan@1.13.0
-  - component: gitlab.sovcombank.group/devops-dbt/components/templates/k8s@1.13.0
+  - component: gitlab.sovcombank.group/devops-dbt/components/templates/build@2.6.2
+  - component: gitlab.sovcombank.group/devops-dbt/components/templates/scan@2.6.2
+  - component: gitlab.sovcombank.group/devops-dbt/components/templates/k8s@2.6.2
     inputs:
       chart: "3.1.0"
       vault-path: $CI_PROJECT_ROOT_NAMESPACE/$CI_PROJECT_NAME
