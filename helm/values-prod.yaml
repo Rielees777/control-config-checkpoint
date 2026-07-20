@@ -1,0 +1,21 @@
+type: Deployment
+strategy:
+  type: Recreate
+containers:
+  control-config-checkpoint:
+    name: control-config-checkpoint
+    repository: ""
+    tag: ""
+    runAsUser: 65534
+    ports:
+      - name: http
+        containerPort: 8080
+    requests:
+      memory: "100Mi"
+      cpu: "100m"
+    limits:
+      memory: "200Mi"
+      cpu: "200m"
+readOnlyRootFilesystem: "true"
+env: {}
+
