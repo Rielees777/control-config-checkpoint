@@ -24,7 +24,7 @@ CHECK_NAME = "allowed-client-any-host"
 SEARCH_STRING = "add allowed-client host any-host"
 
 # Настройки расписания (время в UTC)
-SCHEDULE_TIME = "11:55"  # Изменить на нужное время в формате HH:MM
+SCHEDULE_TIME = "12:25"  # Изменить на нужное время в формате HH:MM
 
 
 @dataclass
@@ -178,7 +178,7 @@ def generate_splunk_output(results: List[CheckResult]) -> List[Dict]:
     """
     output = []
     for result in results:
-        # Определяем статус: ok если строка найдена, defect если не найдена
+        # Определяем статус: ok если строка НЕ найдена, defect если найдена
         status = "defect" if result.has_any_host else "ok"
         
         entry = {
@@ -206,11 +206,7 @@ def send_to_splunk(results: List[CheckResult]) -> bool:
         splunk_data = generate_splunk_output(results)
         
         for event in splunk_data:
-            response = splunk.send(event)
-            if response and response.status_code == 200:
-                LOG.info(f"Успешно отправлено в Splunk: {event['host']} - {event['status']}")
-            else:
-                LOG.error(f"Ошибка отправки в Splunk для {event['host']}: {response.text if response else 'No response'}")
+            splunk.send(event)
         
         LOG.info(f"Всего отправлено событий в Splunk: {SplunkHEC.sent_counter}")
         return True
@@ -235,12 +231,6 @@ def run_check():
     
     # Проверяем конфигурацию всех шлюзов
     results = check_all_gateways(gateway_ips)
-    
-    # Генерируем вывод в формате Splunk
-    splunk_data = generate_splunk_output(results)
-    
-    # Выводим результат в JSON формате
-    print(json.dumps(splunk_data, indent=2, ensure_ascii=False))
     
     # Отправляем данные в Splunk
     send_to_splunk(results)
