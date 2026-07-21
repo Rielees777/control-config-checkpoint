@@ -23,6 +23,9 @@ from config.setup_logger import LOG
 CHECK_NAME = "allowed-client-any-host"
 SEARCH_STRING = "add allowed-client host any-host"
 
+# Настройки расписания (время в UTC)
+SCHEDULE_TIME = "10:35"  # Изменить на нужное время в формате HH:MM
+
 
 @dataclass
 class CheckResult:
@@ -248,12 +251,12 @@ def run_check():
 def run_scheduler():
     """
     Запускает планировщик для ежедневного выполнения проверки.
-    По умолчанию запуск в 03:00 (UTC).
+    Время запуска настраивается через переменную SCHEDULE_TIME.
     """
-    # Настраиваем расписание: запуск каждый день в 03:00 UTC
-    schedule.every().day.at("10:30").do(run_check)
+    # Настраиваем расписание
+    schedule.every().day.at(SCHEDULE_TIME).do(run_check)
     
-    LOG.info("Планировщик запущен. Следующая проверка в 03:00 UTC")
+    LOG.info(f"Планировщик запущен. Следующая проверка в {SCHEDULE_TIME} UTC")
     
     while True:
         schedule.run_pending()
