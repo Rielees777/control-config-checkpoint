@@ -7,6 +7,7 @@ containers:
     repository: ""
     tag: ""
     runAsUser: 65534
+    command: ["python", "main.py", "--schedule"]
     requests:
       memory: "100Mi"
       cpu: "100m"

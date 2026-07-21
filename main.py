@@ -6,9 +6,12 @@
 """
 
 import json
+import time
 from typing import Dict, List, Optional
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import schedule
 
 from services.checkpoint_ssh import CheckPointSSH
 from services.netbox_handler import NetBoxHandler
@@ -214,9 +217,9 @@ def send_to_splunk(results: List[CheckResult]) -> bool:
         return False
 
 
-def main():
+def run_check():
     """
-    Основная функция для запуска проверки конфигурации Check Point шлюзов.
+    Выполняет проверку конфигурации Check Point шлюзов.
     """
     LOG.info("Запуск проверки конфигурации Check Point шлюзов")
     
@@ -240,6 +243,36 @@ def main():
     send_to_splunk(results)
     
     LOG.info("Проверка конфигурации завершена")
+
+
+def run_scheduler():
+    """
+    Запускает планировщик для ежедневного выполнения проверки.
+    По умолчанию запуск в 03:00 (UTC).
+    """
+    # Настраиваем расписание: запуск каждый день в 03:00 UTC
+    schedule.every().day.at("10:30").do(run_check)
+    
+    LOG.info("Планировщик запущен. Следующая проверка в 03:00 UTC")
+    
+    while True:
+        schedule.run_pending()
+        time.sleep(60)  # Проверяем каждую минуту
+
+
+def main():
+    """
+    Основная функция.
+    Если передан аргумент --schedule, запускает планировщик.
+    Иначе выполняет однократную проверку.
+    """
+    import sys
+    
+    if len(sys.argv) > 1 and sys.argv[1] == "--schedule":
+        LOG.info("Запуск в режиме планировщика")
+        run_scheduler()
+    else:
+        run_check()
 
 
 if __name__ == "__main__":
