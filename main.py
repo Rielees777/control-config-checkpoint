@@ -24,7 +24,7 @@ CHECK_NAME = "allowed-client-any-host"
 SEARCH_STRING = "add allowed-client host any-host"
 
 # Настройки расписания (время в UTC)
-SCHEDULE_TIME = "11:45"  # Изменить на нужное время в формате HH:MM
+SCHEDULE_TIME = "11:55"  # Изменить на нужное время в формате HH:MM
 
 
 @dataclass
