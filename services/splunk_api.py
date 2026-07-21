@@ -73,7 +73,7 @@ class SplunkHEC:
                 self.hec_endpoint, 
                 data=json.dumps(payload), 
                 headers=headers, 
-                verify=False
+                verify="/usr/local/share/ca-certificates/splunk.crt"
             )
             
             with self._lock:

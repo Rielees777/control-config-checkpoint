@@ -179,7 +179,7 @@ def generate_splunk_output(results: List[CheckResult]) -> List[Dict]:
     output = []
     for result in results:
         # Определяем статус: ok если строка найдена, defect если не найдена
-        status = "ok" if result.has_any_host else "defect"
+        status = "defect" if result.has_any_host else "ok"
         
         entry = {
             "host": result.host,
