@@ -24,7 +24,7 @@ CHECK_NAME = "allowed-client-any-host"
 SEARCH_STRING = "add allowed-client host any-host"
 
 # Настройки расписания (время в UTC)
-SCHEDULE_TIME = "11:05"  # Изменить на нужное время в формате HH:MM
+SCHEDULE_TIME = "11:25"  # Изменить на нужное время в формате HH:MM
 
 
 @dataclass
@@ -248,7 +248,7 @@ def run_check():
     LOG.info("Проверка конфигурации завершена")
 
 
-def run_scheduler():
+def main():
     """
     Запускает планировщик для ежедневного выполнения проверки.
     Время запуска настраивается через переменную SCHEDULE_TIME.
@@ -261,21 +261,6 @@ def run_scheduler():
     while True:
         schedule.run_pending()
         time.sleep(60)  # Проверяем каждую минуту
-
-
-def main():
-    """
-    Основная функция.
-    Если передан аргумент --schedule, запускает планировщик.
-    Иначе выполняет однократную проверку.
-    """
-    import sys
-    
-    if len(sys.argv) > 1 and sys.argv[1] == "--schedule":
-        LOG.info("Запуск в режиме планировщика")
-        run_scheduler()
-    else:
-        run_check()
 
 
 if __name__ == "__main__":
