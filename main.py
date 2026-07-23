@@ -205,17 +205,29 @@ def send_to_splunk(results: List[CheckResult]) -> bool:
         splunk = SplunkHEC(**splunk_creds())
         splunk_data = generate_splunk_output(results)
         
+        LOG.info(f"Начало отправки {len(splunk_data)} событий в Splunk")
+        LOG.debug(f"Данные для отправки: {splunk_data}")
+        
         success_count = 0
         error_count = 0
         
         for event in splunk_data:
+            LOG.debug(f"Отправка события: {event}")
             response = splunk.send(event)
-            if response and response.status_code == 200:
-                LOG.info(f"Успешно отправлено в Splunk: host={event['host']}, status={event['status']}")
-                success_count += 1
+            
+            if response:
+                LOG.debug(f"Response status code: {response.status_code}")
+                LOG.debug(f"Response headers: {response.headers}")
+                LOG.debug(f"Response text: {response.text}")
+                
+                if response.status_code == 200:
+                    LOG.info(f"Успешно отправлено в Splunk: host={event['host']}, status={event['status']}")
+                    success_count += 1
+                else:
+                    LOG.error(f"Ошибка отправки в Splunk: host={event['host']}, status_code={response.status_code}, response={response.text}")
+                    error_count += 1
             else:
-                error_text = response.text if response else "No response"
-                LOG.error(f"Ошибка отправки в Splunk для {event['host']}: {error_text}")
+                LOG.error(f"Ошибка отправки в Splunk: host={event['host']}, response=None (нет ответа от сервера)")
                 error_count += 1
         
         LOG.info(f"Отправка в Splunk завершена. Успешно: {success_count}, Ошибок: {error_count}")
