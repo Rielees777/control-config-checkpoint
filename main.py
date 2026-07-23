@@ -24,7 +24,7 @@ CHECK_NAME = "allowed-client-any-host"
 SEARCH_STRING = "add allowed-client host any-host"
 
 # Настройки расписания (время в UTC)
-SCHEDULE_TIME = "12:25"  # Изменить на нужное время в формате HH:MM
+SCHEDULE_TIME = "05:25"  # Изменить на нужное время в формате HH:MM
 
 
 @dataclass
@@ -205,11 +205,21 @@ def send_to_splunk(results: List[CheckResult]) -> bool:
         splunk = SplunkHEC(**splunk_creds())
         splunk_data = generate_splunk_output(results)
         
-        for event in splunk_data:
-            splunk.send(event)
+        success_count = 0
+        error_count = 0
         
-        LOG.info(f"Всего отправлено событий в Splunk: {SplunkHEC.sent_counter}")
-        return True
+        for event in splunk_data:
+            response = splunk.send(event)
+            if response and response.status_code == 200:
+                LOG.info(f"Успешно отправлено в Splunk: host={event['host']}, status={event['status']}")
+                success_count += 1
+            else:
+                error_text = response.text if response else "No response"
+                LOG.error(f"Ошибка отправки в Splunk для {event['host']}: {error_text}")
+                error_count += 1
+        
+        LOG.info(f"Отправка в Splunk завершена. Успешно: {success_count}, Ошибок: {error_count}")
+        return error_count == 0
         
     except Exception as e:
         LOG.error(f"Ошибка при отправке в Splunk: {e}")

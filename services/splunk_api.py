@@ -26,7 +26,7 @@ class SplunkHEC:
     sent_counter = 0  
     _lock = threading.Lock()
 
-    def __init__(self, url: str, token: str, port: int, index: str = "itctrl") -> None:
+    def __init__(self, url: str, token: str, port: int, index: str = "itcontrol_net") -> None:
         """
         Инициализация объекта HEC.
         
@@ -45,7 +45,7 @@ class SplunkHEC:
         self.port = port
         self.index = index
 
-    def send(self, event: Dict[str, Any], source: str = "control-config-checkpoint") -> requests.Response:
+    def send(self, event: Dict[str, Any], source: str = "uss_checkpoint_scripts") -> requests.Response:
         """
         Отправляет событие в Splunk через HEC.
         
