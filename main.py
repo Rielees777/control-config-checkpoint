@@ -24,7 +24,7 @@ CHECK_NAME = "allowed-client-any-host"
 SEARCH_STRING = "add allowed-client host any-host"
 
 # Настройки расписания (время в UTC)
-SCHEDULE_TIME = "06:55"  # Изменить на нужное время в формате HH:MM
+SCHEDULE_TIME = "07:35"  # Изменить на нужное время в формате HH:MM
 
 
 @dataclass
@@ -49,13 +49,46 @@ def get_hostname(chp: CheckPointSSH) -> str:
     try:
         # Выполняем команду hostname
         output = chp.send_show_command("hostname")
-        # Извлекаем hostname из вывода (первая строка без управляющих символов)
+        # Извлекаем hostname из вывода
         lines = [line.strip() for line in output.split('\n') if line.strip()]
+        
         for line in lines:
-            # Ищем строку, которая не содержит командных символов
-            if line and not line.startswith('>') and not line.startswith('#'):
+            # Пропускаем строки с командными символами
+            if line.startswith('>') or line.startswith('#'):
+                continue
+            # Пропускаем служебные сообщения
+            if 'Warning' in line or 'warning' in line:
+                continue
+            if 'configuration' in line.lower():
+                continue
+            if 'expert' in line.lower():
+                continue
+            if 'You are in' in line:
+                continue
+            if 'Enter' in line:
+                continue
+            # Ищем строку, которая похожа на hostname (не содержит пробелов)
+            if line and ' ' not in line and '\t' not in line:
                 return line.strip()
+        
+        # Если не удалось определить из вывода команды, пробуем извлечь из приглашения
+        for line in output.split('\n'):
+            # Ищем формат [Expert@hostname или hostname:TACP
+            if '@' in line:
+                parts = line.split('@')
+                if len(parts) > 1:
+                    hostname_part = parts[1].split()[0] if parts[1].strip() else None
+                    if hostname_part and ':' in hostname_part:
+                        hostname_part = hostname_part.split(':')[0]
+                    if hostname_part:
+                        return hostname_part.strip()
+            elif ':TACP' in line or ':0]' in line:
+                hostname = line.split(':')[0].strip()
+                if hostname and not hostname.startswith('#') and not hostname.startswith('>'):
+                    return hostname
+        
         # Если не удалось определить, возвращаем IP
+        LOG.warning(f"Не удалось определить hostname из вывода, используем IP: {chp.ip}")
         return chp.ip
     except Exception as e:
         LOG.warning(f"Не удалось получить hostname для {chp.ip}: {e}")

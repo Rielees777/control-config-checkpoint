@@ -45,7 +45,7 @@ class SplunkHEC:
         self.port = port
         self.index = index
 
-    def send(self, event: Dict[str, Any], source: str = "uss_checkpoint_scripts") -> requests.Response:
+    def send(self, event: Dict[str, Any], source: str = "control_config_checkpoint") -> requests.Response:
         """
         Отправляет событие в Splunk через HEC.
         
