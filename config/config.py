@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     SPLUNK_URL: str
     SPLUNK_TOKEN: str
     SPLUNK_PORT: int = 8088
-    SPLUNK_INDEX: str = "itctrl"
+    SPLUNK_INDEX: str = "itcontrol_net"
 
 
 def splunk_creds():
