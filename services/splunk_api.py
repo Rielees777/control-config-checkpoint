@@ -51,7 +51,7 @@ class SplunkHEC:
         
         Параметры:
             event: Данные события для отправки (любой сериализуемый в JSON формат).
-            source: Источник события (по умолчанию "control-config-checkpoint").
+            source: Источник события (по умолчанию "control_config_checkpoint").
         
         Возвращает:
             requests.Response: Объект ответа от Splunk HEC.
@@ -84,7 +84,7 @@ class SplunkHEC:
             LOG.error(f"Ошибка при отправке в Splunk: {e}")
             raise
 
-    def send_batch(self, events: List[Dict[str, Any]], source: str = "control-config-checkpoint") -> List[requests.Response]:
+    def send_batch(self, events: List[Dict[str, Any]], source: str = "control_config_checkpoint") -> List[requests.Response]:
         """
         Отправляет несколько событий в Splunk.
         
