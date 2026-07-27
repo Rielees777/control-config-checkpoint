@@ -16,6 +16,7 @@ import schedule
 from services.checkpoint_ssh import CheckPointSSH
 from services.netbox_handler import NetBoxHandler
 from services.splunk_api import SplunkHEC
+from services.ssh_accounts_parser import check_ssh_accounts_against_ad
 from config.config import settings, splunk_creds
 from config.setup_logger import LOG
 
@@ -26,6 +27,10 @@ SEARCH_STRING = "add allowed-client host any-host"
 # Настройки расписания (время в UTC)
 SCHEDULE_TIME = "09:00"  # Изменить на нужное время в формате HH:MM
 
+# Проверка SSH-учетных записей запускается по отдельному расписанию,
+# т.к. результат уходит не в Splunk, а в Pyrus (отдельной задачей)
+SSH_ACCOUNTS_SCHEDULE_TIME = "10:00"  # Изменить на нужное время в формате HH:MM
+
 
 @dataclass
 class CheckResult:
@@ -33,6 +38,16 @@ class CheckResult:
     host: str
     gateway_ip: str
     has_any_host: bool
+    error: Optional[str] = None
+
+
+@dataclass
+class SSHAccountsCheckResult:
+    """Результат сверки SSH-учетных записей шлюза со списком пользователей AD."""
+    host: str
+    gateway_ip: str
+    matched: List[str] = None
+    not_in_ad: List[str] = None
     error: Optional[str] = None
 
 
@@ -199,6 +214,119 @@ def check_all_gateways(gateway_ips: List[str], max_workers: int = 10) -> List[Ch
     return results
 
 
+def check_gateway_ssh_accounts(gateway_ip: str) -> SSHAccountsCheckResult:
+    """
+    Подключается к Check Point шлюзу и сверяет его именные SSH-учетные
+    записи со списком пользователей AD-группы.
+
+    Args:
+        gateway_ip: IP-адрес шлюза Check Point
+
+    Returns:
+        SSHAccountsCheckResult с результатами сверки
+    """
+    if not settings.AD_SSH_GROUP_NAME:
+        LOG.warning("AD_SSH_GROUP_NAME не задан, проверка SSH-учетных записей пропущена")
+        return SSHAccountsCheckResult(
+            host=gateway_ip,
+            gateway_ip=gateway_ip,
+            error="AD_SSH_GROUP_NAME не задан",
+        )
+
+    try:
+        with CheckPointSSH(gateway_ip) as chp:
+            hostname = get_hostname(chp)
+            LOG.info(f"Проверка SSH-учетных записей шлюза {hostname} ({gateway_ip})")
+
+            comparison = check_ssh_accounts_against_ad(chp, settings.AD_SSH_GROUP_NAME)
+
+            return SSHAccountsCheckResult(
+                host=hostname,
+                gateway_ip=gateway_ip,
+                matched=comparison["matched"],
+                not_in_ad=comparison["not_in_ad"],
+            )
+    except Exception as e:
+        LOG.error(f"Ошибка при проверке SSH-учетных записей {gateway_ip}: {e}")
+        return SSHAccountsCheckResult(
+            host=gateway_ip,
+            gateway_ip=gateway_ip,
+            error=str(e),
+        )
+
+
+def check_all_gateways_ssh_accounts(
+    gateway_ips: List[str], max_workers: int = 10
+) -> List[SSHAccountsCheckResult]:
+    """
+    Проверяет SSH-учетные записи всех указанных шлюзов с использованием потоков.
+
+    Args:
+        gateway_ips: Список IP-адресов шлюзов для проверки
+        max_workers: Максимальное количество одновременных потоков (по умолчанию 10)
+
+    Returns:
+        Список результатов проверки для каждого шлюза
+    """
+    results: List[SSHAccountsCheckResult] = []
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_ip = {
+            executor.submit(check_gateway_ssh_accounts, ip): ip
+            for ip in gateway_ips
+        }
+
+        for future in as_completed(future_to_ip):
+            ip = future_to_ip[future]
+            try:
+                results.append(future.result())
+            except Exception as e:
+                LOG.error(f"Ошибка при проверке SSH-учетных записей {ip}: {e}")
+                results.append(SSHAccountsCheckResult(host=ip, gateway_ip=ip, error=str(e)))
+
+    return results
+
+
+def handle_ssh_accounts_results(results: List[SSHAccountsCheckResult]) -> None:
+    """
+    Обрабатывает результаты сверки SSH-учетных записей.
+
+    TODO: результат должен уходить отдельной задачей в Pyrus (по форме,
+    которая пока не готова), а не в Splunk. Пока форма не подготовлена,
+    результаты только логируются.
+    """
+    for result in results:
+        if result.error:
+            LOG.warning(f"{result.host}: проверка SSH-учетных записей не выполнена — {result.error}")
+            continue
+        if result.not_in_ad:
+            LOG.info(
+                f"{result.host}: учетные записи отсутствуют в AD-группе "
+                f"{settings.AD_SSH_GROUP_NAME}: {result.not_in_ad}"
+            )
+        else:
+            LOG.info(f"{result.host}: все именные учетные записи присутствуют в AD-группе")
+
+
+def run_ssh_accounts_check():
+    """
+    Выполняет сверку SSH-учетных записей Check Point шлюзов со списком
+    пользователей AD-группы. Запускается по собственному расписанию,
+    отдельно от проверки конфигурации (SCHEDULE_TIME).
+    """
+    LOG.info("Запуск проверки SSH-учетных записей Check Point шлюзов")
+
+    gateway_ips = get_gateways_from_netbox()
+    if not gateway_ips:
+        LOG.warning("Не удалось получить список шлюзов из NetBox")
+        return
+
+    results = check_all_gateways_ssh_accounts(gateway_ips)
+    handle_ssh_accounts_results(results)
+
+    LOG.info("Проверка SSH-учетных записей завершена")
+
+
 def generate_splunk_output(results: List[CheckResult]) -> List[Dict]:
     """
     Генерирует данные в формате для Splunk.
@@ -300,8 +428,12 @@ def main():
     """
     # Настраиваем расписание
     schedule.every().day.at(SCHEDULE_TIME).do(run_check)
-    
-    LOG.info(f"Планировщик запущен. Следующая проверка в {SCHEDULE_TIME} UTC")
+    schedule.every().day.at(SSH_ACCOUNTS_SCHEDULE_TIME).do(run_ssh_accounts_check)
+
+    LOG.info(
+        f"Планировщик запущен. Проверка конфигурации в {SCHEDULE_TIME} UTC, "
+        f"проверка SSH-учетных записей в {SSH_ACCOUNTS_SCHEDULE_TIME} UTC"
+    )
     
     while True:
         schedule.run_pending()

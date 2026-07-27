@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     # --- Active Directory (LDAP) ---
     AD_LOGIN: str
     AD_PASSWORD: str
+    AD_SSH_GROUP_NAME: str = ""
 
 
 def splunk_creds():
