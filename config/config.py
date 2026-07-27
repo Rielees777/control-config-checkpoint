@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     SPLUNK_PORT: int = 8088
     SPLUNK_INDEX: str = "itcontrol_net"
 
+    # --- Active Directory (LDAP) ---
+    AD_LOGIN: str
+    AD_PASSWORD: str
+
 
 def splunk_creds():
     return {

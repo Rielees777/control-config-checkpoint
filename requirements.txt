@@ -6,3 +6,4 @@ pydantic
 pydantic_settings
 pynetbox
 schedule
+ldap3
