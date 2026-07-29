@@ -287,23 +287,43 @@ def check_all_gateways_ssh_accounts(
     return results
 
 
+def build_pyrus_task_payload(result: SSHAccountsCheckResult) -> Dict:
+    """
+    Формирует данные будущей задачи Pyrus по найденным лишним SSH-учетным
+    записям (именные учетки на шлюзе, которых нет в AD-группе и нет в
+    исключениях). Возвращает только сырые данные, без вызова Pyrus API.
+    """
+    return {
+        "host": result.host,
+        "gateway_ip": result.gateway_ip,
+        "ad_group": settings.AD_SSH_GROUP_NAME,
+        "extra_accounts": result.not_in_ad,
+    }
+
+
 def handle_ssh_accounts_results(results: List[SSHAccountsCheckResult]) -> None:
     """
     Обрабатывает результаты сверки SSH-учетных записей.
 
-    TODO: результат должен уходить отдельной задачей в Pyrus (по форме,
-    которая пока не готова), а не в Splunk. Пока форма не подготовлена,
-    результаты только логируются.
+    TODO: когда будет готова форма Pyrus (form_id и id полей), заменить
+    build_pyrus_task_payload(...) на реальный вызов создания задачи через
+    PyrusClient. Пока форма не готова, по каждому найденному лишнему
+    пользователю только логируется алерт с готовым payload — для
+    экспериментов на тестовом шлюзе.
     """
     for result in results:
         if result.error:
             LOG.warning(f"{result.host}: проверка SSH-учетных записей не выполнена — {result.error}")
             continue
+
         if result.not_in_ad:
-            LOG.info(
-                f"{result.host}: учетные записи отсутствуют в AD-группе "
-                f"{settings.AD_SSH_GROUP_NAME}: {result.not_in_ad}"
+            payload = build_pyrus_task_payload(result)
+            LOG.error(
+                f"ALERT: {result.host} ({result.gateway_ip}) — найдены SSH-учетные записи, "
+                f"отсутствующие в AD-группе '{settings.AD_SSH_GROUP_NAME}' и не входящие "
+                f"в исключения (SERVICE_ACCOUNTS): {result.not_in_ad}"
             )
+            LOG.debug(f"Payload для задачи Pyrus (задача пока не создается): {payload}")
         else:
             LOG.info(f"{result.host}: все именные учетные записи присутствуют в AD-группе")
 

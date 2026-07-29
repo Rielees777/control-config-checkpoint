@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config.config import settings
 from services.checkpoint_ssh import CheckPointSSH
 from services.ssh_accounts_parser import check_ssh_accounts_against_ad
+from main import SSHAccountsCheckResult, build_pyrus_task_payload, get_hostname
 
 
 def main():
@@ -35,10 +36,24 @@ def main():
 
     print(f"Подключение к шлюзу {gateway_ip}...")
     with CheckPointSSH(gateway_ip) as chp:
-        result = check_ssh_accounts_against_ad(chp, ad_group)
+        hostname = get_hostname(chp)
+        comparison = check_ssh_accounts_against_ad(chp, ad_group)
 
-    print(f"\nСовпадают с AD-группой '{ad_group}': {result['matched']}")
-    print(f"Отсутствуют в AD-группе '{ad_group}': {result['not_in_ad']}")
+    print(f"\nСовпадают с AD-группой '{ad_group}': {comparison['matched']}")
+    print(f"Отсутствуют в AD-группе '{ad_group}': {comparison['not_in_ad']}")
+
+    result = SSHAccountsCheckResult(
+        host=hostname,
+        gateway_ip=gateway_ip,
+        matched=comparison["matched"],
+        not_in_ad=comparison["not_in_ad"],
+    )
+
+    if result.not_in_ad:
+        print(f"\nALERT: найдены лишние учетные записи, задача Pyrus будет создана из payload:")
+        print(build_pyrus_task_payload(result))
+    else:
+        print("\nВсе именные учетные записи присутствуют в AD-группе, алерта нет.")
 
 
 if __name__ == "__main__":
