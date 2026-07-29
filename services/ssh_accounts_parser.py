@@ -18,6 +18,10 @@ SERVICE_ACCOUNTS: Set[str] = {
     "n_netscaner",
 }
 
+# Стандартный префикс логинов специалистов на шлюзе: логин "n_petrovpp"
+# на шлюзе соответствует пользователю "petrovpp" в AD
+PERSONAL_ACCOUNT_PREFIX = "n_"
+
 _HEADER_RE = re.compile(r"^User\s+Uid\s+Gid\s+Home\s+Dir\.\s+Shell\s+Real\s+Name\s+Privileges", re.IGNORECASE)
 _SPLIT_RE = re.compile(r"\s{2,}")
 
@@ -101,9 +105,22 @@ def get_named_accounts(accounts: List[SSHAccount]) -> List[SSHAccount]:
     return [acc for acc in accounts if not is_service_account(acc.user)]
 
 
+def _normalize_login(login: str) -> str:
+    """
+    Приводит логин шлюза к виду, сравнимому с sAMAccountName из AD:
+    убирает стандартный префикс специалистов "n_" (n_petrovpp -> petrovpp).
+    """
+    login = login.strip().lower()
+    if login.startswith(PERSONAL_ACCOUNT_PREFIX):
+        login = login[len(PERSONAL_ACCOUNT_PREFIX):]
+    return login
+
+
 def compare_with_ad(named_accounts: List[SSHAccount], ad_users: List[str]) -> dict:
     """
     Сравнивает именные учетные записи шлюза со списком пользователей из AD-группы.
+    Логин шлюза сравнивается с sAMAccountName без префикса "n_"
+    (n_petrovpp на шлюзе соответствует petrovpp в AD).
 
     Args:
         named_accounts: именные учетные записи (результат get_named_accounts)
@@ -120,7 +137,7 @@ def compare_with_ad(named_accounts: List[SSHAccount], ad_users: List[str]) -> di
     not_in_ad = []
 
     for acc in named_accounts:
-        if acc.user.strip().lower() in ad_set:
+        if _normalize_login(acc.user) in ad_set:
             matched.append(acc.user)
         else:
             not_in_ad.append(acc.user)
