@@ -148,6 +148,12 @@ def check_ssh_accounts_against_ad(
     Returns:
         dict с ключами "matched" и "not_in_ad" (см. compare_with_ad)
     """
+    # "show users" - команда clish, а не Expert-режима (bash), в который
+    # CheckPointSSH переходит сразу при подключении, поэтому перед
+    # выполнением обязательно выходим из Expert-режима
+    if chp.check_expert_mode():
+        chp.exit_from_expert()
+
     raw_output = chp.send_show_command("show users")
     named_accounts = get_named_accounts(parse_show_users(raw_output))
 
