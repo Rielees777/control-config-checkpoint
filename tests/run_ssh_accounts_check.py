@@ -29,7 +29,7 @@ from main import (
     build_pyrus_task_payload,
     get_hostname,
     get_gateways_from_netbox,
-    check_gateway_ssh_accounts,
+    check_all_gateways_ssh_accounts,
 )
 
 
@@ -68,9 +68,9 @@ def check_all_gateways(ad_group: str) -> None:
         print("Не удалось получить список шлюзов из NetBox")
         return
 
-    print(f"Получено {len(gateway_ips)} шлюзов из NetBox")
-    for gateway_ip in gateway_ips:
-        result = check_gateway_ssh_accounts(gateway_ip)
+    print(f"Получено {len(gateway_ips)} шлюзов из NetBox, проверка в потоках...")
+    results = check_all_gateways_ssh_accounts(gateway_ips)
+    for result in results:
         print_result(result, ad_group)
 
 
