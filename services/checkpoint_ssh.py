@@ -75,6 +75,8 @@ class CheckPointSSH:
         prompt_str = self.get_prompt()
         if '#' in prompt_str:
             self.ssh.send('exit\n')
+            time.sleep(1)
+            self.ssh.recv(5000)
         else:
             return
 
