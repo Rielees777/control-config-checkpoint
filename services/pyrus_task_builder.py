@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-Формирование и отправка задачи в Pyrus по найденным лишним SSH-учетным
-записям на шлюзах Check Point.
+Формирование и отправка задачи в Pyrus по найденным проблемам конфигурации
+шлюзов Check Point (лишние SSH-учетные записи, расхождения в интерфейсах
+и т.д.).
 
 Форма "УСС. Устранение неисправностей" (form_id=459137), ветка
 Направление="ОСУДиИ" -> "ОСУДиИ Неисправности"="Checkpoint Control Config",
@@ -17,14 +18,14 @@ from config.setup_logger import LOG
 from services.pyrus_api import pyrus_client
 
 _TEMPLATES_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "templates")
-_TEMPLATE_NAME = "checkpoint_ssh_accounts_task.j2"
+_TEMPLATE_NAME = "checkpoint_control_config_task.j2"
 
 _env = Environment(loader=FileSystemLoader(_TEMPLATES_DIR))
 
 
-def build_checkpoint_ssh_accounts_task_body(rows: List[Dict]) -> dict:
+def build_checkpoint_control_config_task_body(rows: List[Dict]) -> dict:
     """
-    Рендерит шаблон templates/checkpoint_ssh_accounts_task.j2 строками вида
+    Рендерит шаблон templates/checkpoint_control_config_task.j2 строками вида
     {"host": ..., "ip": ..., "trouble": ...} и возвращает готовое тело
     запроса для Pyrus API (POST /tasks).
     """
@@ -33,9 +34,9 @@ def build_checkpoint_ssh_accounts_task_body(rows: List[Dict]) -> dict:
     return json.loads(rendered)
 
 
-def create_checkpoint_ssh_accounts_task(rows: List[Dict]) -> Optional[int]:
+def create_checkpoint_control_config_task(rows: List[Dict]) -> Optional[int]:
     """
-    Создает задачу в Pyrus по найденным лишним SSH-учетным записям.
+    Создает задачу в Pyrus по найденным проблемам конфигурации Check Point.
 
     Args:
         rows: список найденных проблем вида {"host", "ip", "trouble"}
@@ -46,8 +47,8 @@ def create_checkpoint_ssh_accounts_task(rows: List[Dict]) -> Optional[int]:
     if not rows:
         return None
 
-    body = build_checkpoint_ssh_accounts_task_body(rows)
+    body = build_checkpoint_control_config_task_body(rows)
     response = pyrus_client.create_task(body)
     task_id = response.get("task", {}).get("id")
-    LOG.info(f"Создана задача Pyrus по лишним SSH-учетным записям Check Point: id={task_id}")
+    LOG.info(f"Создана задача Pyrus по проблемам конфигурации Check Point: id={task_id}")
     return task_id

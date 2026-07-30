@@ -26,7 +26,7 @@ from typing import List
 from config.config import settings
 from services.checkpoint_ssh import CheckPointSSH
 from services.ssh_accounts_parser import check_ssh_accounts_against_ad
-from services.pyrus_task_builder import create_checkpoint_ssh_accounts_task
+from services.pyrus_task_builder import create_checkpoint_control_config_task
 from main import (
     SSHAccountsCheckResult,
     build_pyrus_task_rows,
@@ -97,7 +97,7 @@ def main():
     rows = build_pyrus_task_rows(results)
     if rows:
         print(f"\nСоздание задачи Pyrus по {len(rows)} найденным лишним учетным записям...")
-        task_id = create_checkpoint_ssh_accounts_task(rows)
+        task_id = create_checkpoint_control_config_task(rows)
         print(f"Задача Pyrus создана: id={task_id}")
     else:
         print("\nЛишних учетных записей не найдено, задача Pyrus не создается.")

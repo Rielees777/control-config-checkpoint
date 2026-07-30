@@ -17,7 +17,8 @@ from services.checkpoint_ssh import CheckPointSSH
 from services.netbox_handler import NetBoxHandler
 from services.splunk_api import SplunkHEC
 from services.ssh_accounts_parser import check_ssh_accounts_against_ad
-from services.pyrus_task_builder import create_checkpoint_ssh_accounts_task
+from services.interfaces_parser import check_interfaces
+from services.pyrus_task_builder import create_checkpoint_control_config_task
 from config.config import settings, splunk_creds
 from config.setup_logger import LOG
 
@@ -31,6 +32,10 @@ SCHEDULE_TIME = "09:00"  # Изменить на нужное время в фо
 # Проверка SSH-учетных записей запускается по отдельному расписанию,
 # т.к. результат уходит не в Splunk, а в Pyrus (отдельной задачей)
 SSH_ACCOUNTS_SCHEDULE_TIME = "10:00"  # Изменить на нужное время в формате HH:MM
+
+# Проверка интерфейсов - по аналогии с SSH-учетными записями, результат
+# также уходит в Pyrus
+INTERFACES_SCHEDULE_TIME = "10:15"  # Изменить на нужное время в формате HH:MM
 
 
 @dataclass
@@ -49,6 +54,16 @@ class SSHAccountsCheckResult:
     gateway_ip: str
     matched: List[str] = None
     not_in_ad: List[str] = None
+    error: Optional[str] = None
+
+
+@dataclass
+class InterfacesCheckResult:
+    """Результат сверки интерфейсов шлюза с эталонным набором."""
+    host: str
+    gateway_ip: str
+    missing: List[str] = None
+    unexpected: List[str] = None
     error: Optional[str] = None
 
 
@@ -288,6 +303,138 @@ def check_all_gateways_ssh_accounts(
     return results
 
 
+def check_gateway_interfaces(gateway_ip: str) -> InterfacesCheckResult:
+    """
+    Подключается к Check Point шлюзу и сверяет его интерфейсы с
+    эталонным набором (services.interfaces_parser.EXPECTED_INTERFACES).
+
+    Args:
+        gateway_ip: IP-адрес шлюза Check Point
+
+    Returns:
+        InterfacesCheckResult с результатами сверки
+    """
+    try:
+        with CheckPointSSH(gateway_ip) as chp:
+            hostname = get_hostname(chp)
+            LOG.info(f"Проверка интерфейсов шлюза {hostname} ({gateway_ip})")
+
+            comparison = check_interfaces(chp)
+
+            return InterfacesCheckResult(
+                host=hostname,
+                gateway_ip=gateway_ip,
+                missing=comparison["missing"],
+                unexpected=comparison["unexpected"],
+            )
+    except Exception as e:
+        LOG.error(f"Ошибка при проверке интерфейсов {gateway_ip}: {e}")
+        return InterfacesCheckResult(
+            host=gateway_ip,
+            gateway_ip=gateway_ip,
+            error=str(e),
+        )
+
+
+def check_all_gateways_interfaces(
+    gateway_ips: List[str], max_workers: int = 10
+) -> List[InterfacesCheckResult]:
+    """
+    Проверяет интерфейсы всех указанных шлюзов с использованием потоков.
+
+    Args:
+        gateway_ips: Список IP-адресов шлюзов для проверки
+        max_workers: Максимальное количество одновременных потоков (по умолчанию 10)
+
+    Returns:
+        Список результатов проверки для каждого шлюза
+    """
+    results: List[InterfacesCheckResult] = []
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_ip = {
+            executor.submit(check_gateway_interfaces, ip): ip
+            for ip in gateway_ips
+        }
+
+        for future in as_completed(future_to_ip):
+            ip = future_to_ip[future]
+            try:
+                results.append(future.result())
+            except Exception as e:
+                LOG.error(f"Ошибка при проверке интерфейсов {ip}: {e}")
+                results.append(InterfacesCheckResult(host=ip, gateway_ip=ip, error=str(e)))
+
+    return results
+
+
+def build_pyrus_task_rows_interfaces(results: List[InterfacesCheckResult]) -> List[Dict]:
+    """
+    Формирует строки будущей задачи Pyrus (Host/IP/Trouble) по всем
+    найденным за прогон расхождениям в интерфейсах.
+    """
+    rows = []
+    for result in results:
+        if result.error:
+            continue
+        for iface in result.missing:
+            rows.append({
+                "host": result.host,
+                "ip": result.gateway_ip,
+                "trouble": f"Отсутствует ожидаемый интерфейс: {iface}",
+            })
+        for iface in result.unexpected:
+            rows.append({
+                "host": result.host,
+                "ip": result.gateway_ip,
+                "trouble": f"Обнаружен неожиданный интерфейс: {iface}",
+            })
+    return rows
+
+
+def handle_interfaces_results(results: List[InterfacesCheckResult]) -> None:
+    """
+    Обрабатывает результаты сверки интерфейсов: логирует ALERT по каждому
+    шлюзу с расхождениями и создает одну задачу Pyrus на весь прогон со
+    всеми найденными проблемами (форма 459137, "ОСУДиИ" ->
+    "Checkpoint Control Config").
+    """
+    for result in results:
+        if result.error:
+            LOG.warning(f"{result.host}: проверка интерфейсов не выполнена — {result.error}")
+            continue
+
+        if result.missing or result.unexpected:
+            LOG.error(
+                f"ALERT: {result.host} ({result.gateway_ip}) — расхождения в интерфейсах: "
+                f"отсутствуют {result.missing}, лишние {result.unexpected}"
+            )
+        else:
+            LOG.info(f"{result.host}: интерфейсы соответствуют эталонному набору")
+
+    rows = build_pyrus_task_rows_interfaces(results)
+    if rows:
+        create_checkpoint_control_config_task(rows)
+
+
+def run_interfaces_check():
+    """
+    Выполняет сверку интерфейсов Check Point шлюзов с эталонным набором.
+    Запускается по собственному расписанию (INTERFACES_SCHEDULE_TIME).
+    """
+    LOG.info("Запуск проверки интерфейсов Check Point шлюзов")
+
+    gateway_ips = get_gateways_from_netbox()
+    if not gateway_ips:
+        LOG.warning("Не удалось получить список шлюзов из NetBox")
+        return
+
+    results = check_all_gateways_interfaces(gateway_ips)
+    handle_interfaces_results(results)
+
+    LOG.info("Проверка интерфейсов завершена")
+
+
 def build_pyrus_task_payload(result: SSHAccountsCheckResult) -> Dict:
     """
     Формирует данные будущей задачи Pyrus по найденным лишним SSH-учетным
@@ -306,7 +453,7 @@ def build_pyrus_task_rows(results: List[SSHAccountsCheckResult]) -> List[Dict]:
     """
     Формирует строки будущей задачи Pyrus (Host/IP/Trouble) по всем
     найденным за прогон лишним SSH-учетным записям, см.
-    templates/checkpoint_ssh_accounts_task.j2.
+    templates/checkpoint_control_config_task.j2.
     """
     rows = []
     for result in results:
@@ -347,7 +494,7 @@ def handle_ssh_accounts_results(results: List[SSHAccountsCheckResult]) -> None:
 
     rows = build_pyrus_task_rows(results)
     if rows:
-        create_checkpoint_ssh_accounts_task(rows)
+        create_checkpoint_control_config_task(rows)
 
 
 def run_ssh_accounts_check():
@@ -471,10 +618,12 @@ def main():
     # Настраиваем расписание
     schedule.every().day.at(SCHEDULE_TIME).do(run_check)
     schedule.every().day.at(SSH_ACCOUNTS_SCHEDULE_TIME).do(run_ssh_accounts_check)
+    schedule.every().day.at(INTERFACES_SCHEDULE_TIME).do(run_interfaces_check)
 
     LOG.info(
         f"Планировщик запущен. Проверка конфигурации в {SCHEDULE_TIME} UTC, "
-        f"проверка SSH-учетных записей в {SSH_ACCOUNTS_SCHEDULE_TIME} UTC"
+        f"проверка SSH-учетных записей в {SSH_ACCOUNTS_SCHEDULE_TIME} UTC, "
+        f"проверка интерфейсов в {INTERFACES_SCHEDULE_TIME} UTC"
     )
     
     while True:
