@@ -8,8 +8,8 @@ CHP_PASSWORD, CHP_EXPERT, NETBOX_URL, NETBOX_TOKEN, NETBOX_CERT).
 
 Использование:
     python tests/run_interfaces_check.py
-        Проверка всех шлюзов, полученных из NetBox (как в run_interfaces_check
-        из main.py).
+        Проверка всех шлюзов, полученных из NetBox (интерфейсная часть
+        того, что делает run_ssh_accounts_check из main.py).
 
     python tests/run_interfaces_check.py <gateway_ip>
         Проверка одного шлюза.

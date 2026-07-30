@@ -29,13 +29,10 @@ SEARCH_STRING = "add allowed-client host any-host"
 # Настройки расписания (время в UTC)
 SCHEDULE_TIME = "09:00"  # Изменить на нужное время в формате HH:MM
 
-# Проверка SSH-учетных записей запускается по отдельному расписанию,
-# т.к. результат уходит не в Splunk, а в Pyrus (отдельной задачей)
+# Проверка SSH-учетных записей и интерфейсов запускается по отдельному
+# расписанию, т.к. результат уходит не в Splunk, а в Pyrus (одной общей
+# задачей на обе проверки, см. run_ssh_accounts_check)
 SSH_ACCOUNTS_SCHEDULE_TIME = "10:00"  # Изменить на нужное время в формате HH:MM
-
-# Проверка интерфейсов - по аналогии с SSH-учетными записями, результат
-# также уходит в Pyrus
-INTERFACES_SCHEDULE_TIME = "10:15"  # Изменить на нужное время в формате HH:MM
 
 
 @dataclass
@@ -392,13 +389,8 @@ def build_pyrus_task_rows_interfaces(results: List[InterfacesCheckResult]) -> Li
     return rows
 
 
-def handle_interfaces_results(results: List[InterfacesCheckResult]) -> None:
-    """
-    Обрабатывает результаты сверки интерфейсов: логирует ALERT по каждому
-    шлюзу с расхождениями и создает одну задачу Pyrus на весь прогон со
-    всеми найденными проблемами (форма 459137, "ОСУДиИ" ->
-    "Checkpoint Control Config").
-    """
+def log_interfaces_results(results: List[InterfacesCheckResult]) -> None:
+    """Логирует ALERT по каждому шлюзу с расхождениями в интерфейсах."""
     for result in results:
         if result.error:
             LOG.warning(f"{result.host}: проверка интерфейсов не выполнена — {result.error}")
@@ -411,28 +403,6 @@ def handle_interfaces_results(results: List[InterfacesCheckResult]) -> None:
             )
         else:
             LOG.info(f"{result.host}: интерфейсы соответствуют эталонному набору")
-
-    rows = build_pyrus_task_rows_interfaces(results)
-    if rows:
-        create_checkpoint_control_config_task(rows)
-
-
-def run_interfaces_check():
-    """
-    Выполняет сверку интерфейсов Check Point шлюзов с эталонным набором.
-    Запускается по собственному расписанию (INTERFACES_SCHEDULE_TIME).
-    """
-    LOG.info("Запуск проверки интерфейсов Check Point шлюзов")
-
-    gateway_ips = get_gateways_from_netbox()
-    if not gateway_ips:
-        LOG.warning("Не удалось получить список шлюзов из NetBox")
-        return
-
-    results = check_all_gateways_interfaces(gateway_ips)
-    handle_interfaces_results(results)
-
-    LOG.info("Проверка интерфейсов завершена")
 
 
 def build_pyrus_task_payload(result: SSHAccountsCheckResult) -> Dict:
@@ -471,13 +441,8 @@ def build_pyrus_task_rows(results: List[SSHAccountsCheckResult]) -> List[Dict]:
     return rows
 
 
-def handle_ssh_accounts_results(results: List[SSHAccountsCheckResult]) -> None:
-    """
-    Обрабатывает результаты сверки SSH-учетных записей: логирует ALERT по
-    каждому шлюзу с лишними учетками и создает одну задачу Pyrus на весь
-    прогон со всеми найденными проблемами (форма 459137, "ОСУДиИ" ->
-    "Checkpoint Control Config").
-    """
+def log_ssh_accounts_results(results: List[SSHAccountsCheckResult]) -> None:
+    """Логирует ALERT по каждому шлюзу с лишними SSH-учетными записями."""
     for result in results:
         if result.error:
             LOG.warning(f"{result.host}: проверка SSH-учетных записей не выполнена — {result.error}")
@@ -492,28 +457,33 @@ def handle_ssh_accounts_results(results: List[SSHAccountsCheckResult]) -> None:
         else:
             LOG.info(f"{result.host}: все именные учетные записи присутствуют в AD-группе")
 
-    rows = build_pyrus_task_rows(results)
-    if rows:
-        create_checkpoint_control_config_task(rows)
-
 
 def run_ssh_accounts_check():
     """
-    Выполняет сверку SSH-учетных записей Check Point шлюзов со списком
-    пользователей AD-группы. Запускается по собственному расписанию,
-    отдельно от проверки конфигурации (SCHEDULE_TIME).
+    Выполняет проверку SSH-учетных записей и интерфейсов Check Point
+    шлюзов по единому расписанию: сначала учетные записи, затем
+    интерфейсы. Все найденные за прогон расхождения обоих типов уходят
+    в ОДНУ задачу Pyrus (форма 459137, "ОСУДиИ" -> "Checkpoint Control
+    Config"), чтобы не плодить несколько задач за один прогон.
     """
-    LOG.info("Запуск проверки SSH-учетных записей Check Point шлюзов")
+    LOG.info("Запуск проверки SSH-учетных записей и интерфейсов Check Point шлюзов")
 
     gateway_ips = get_gateways_from_netbox()
     if not gateway_ips:
         LOG.warning("Не удалось получить список шлюзов из NetBox")
         return
 
-    results = check_all_gateways_ssh_accounts(gateway_ips)
-    handle_ssh_accounts_results(results)
+    accounts_results = check_all_gateways_ssh_accounts(gateway_ips)
+    log_ssh_accounts_results(accounts_results)
 
-    LOG.info("Проверка SSH-учетных записей завершена")
+    interfaces_results = check_all_gateways_interfaces(gateway_ips)
+    log_interfaces_results(interfaces_results)
+
+    rows = build_pyrus_task_rows(accounts_results) + build_pyrus_task_rows_interfaces(interfaces_results)
+    if rows:
+        create_checkpoint_control_config_task(rows)
+
+    LOG.info("Проверка SSH-учетных записей и интерфейсов завершена")
 
 
 def generate_splunk_output(results: List[CheckResult]) -> List[Dict]:
@@ -618,12 +588,10 @@ def main():
     # Настраиваем расписание
     schedule.every().day.at(SCHEDULE_TIME).do(run_check)
     schedule.every().day.at(SSH_ACCOUNTS_SCHEDULE_TIME).do(run_ssh_accounts_check)
-    schedule.every().day.at(INTERFACES_SCHEDULE_TIME).do(run_interfaces_check)
 
     LOG.info(
         f"Планировщик запущен. Проверка конфигурации в {SCHEDULE_TIME} UTC, "
-        f"проверка SSH-учетных записей в {SSH_ACCOUNTS_SCHEDULE_TIME} UTC, "
-        f"проверка интерфейсов в {INTERFACES_SCHEDULE_TIME} UTC"
+        f"проверка SSH-учетных записей и интерфейсов в {SSH_ACCOUNTS_SCHEDULE_TIME} UTC"
     )
     
     while True:
