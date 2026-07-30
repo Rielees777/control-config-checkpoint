@@ -57,6 +57,21 @@ class PyrusClient:
         response = self._make_request('GET', url, token=token)
         return response.json()
 
+    def create_task(self, data: dict) -> dict:
+        """
+        Создает новую задачу в Pyrus по готовому телу запроса
+        (form_id + fields, см. Pyrus API v4 POST /tasks).
+        """
+        token = self.get_token()
+        try:
+            response = self._make_request('POST', 'tasks', token=token, data=data)
+            task_id = response.json().get('task', {}).get('id')
+            LOG.info(f"Создана задача Pyrus, id={task_id}")
+            return response.json()
+        except Exception as e:
+            LOG.error(f"Ошибка при создании задачи Pyrus: {e}")
+            raise
+
     def add_comment(self, task_id, text):
         """Добавляет обычный комментарий к задаче."""
         token = self.get_token()

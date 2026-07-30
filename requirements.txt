@@ -7,3 +7,4 @@ pydantic_settings
 pynetbox
 schedule
 ldap3
+jinja2

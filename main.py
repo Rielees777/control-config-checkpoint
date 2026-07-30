@@ -17,6 +17,7 @@ from services.checkpoint_ssh import CheckPointSSH
 from services.netbox_handler import NetBoxHandler
 from services.splunk_api import SplunkHEC
 from services.ssh_accounts_parser import check_ssh_accounts_against_ad
+from services.pyrus_task_builder import create_checkpoint_ssh_accounts_task
 from config.config import settings, splunk_creds
 from config.setup_logger import LOG
 
@@ -301,15 +302,34 @@ def build_pyrus_task_payload(result: SSHAccountsCheckResult) -> Dict:
     }
 
 
+def build_pyrus_task_rows(results: List[SSHAccountsCheckResult]) -> List[Dict]:
+    """
+    Формирует строки будущей задачи Pyrus (Host/IP/Trouble) по всем
+    найденным за прогон лишним SSH-учетным записям, см.
+    templates/checkpoint_ssh_accounts_task.j2.
+    """
+    rows = []
+    for result in results:
+        if result.error or not result.not_in_ad:
+            continue
+        for account in result.not_in_ad:
+            rows.append({
+                "host": result.host,
+                "ip": result.gateway_ip,
+                "trouble": (
+                    f"Учетная запись {account} отсутствует в AD-группе "
+                    f"'{settings.AD_SSH_GROUP_NAME}' и не входит в исключения"
+                ),
+            })
+    return rows
+
+
 def handle_ssh_accounts_results(results: List[SSHAccountsCheckResult]) -> None:
     """
-    Обрабатывает результаты сверки SSH-учетных записей.
-
-    TODO: когда будет готова форма Pyrus (form_id и id полей), заменить
-    build_pyrus_task_payload(...) на реальный вызов создания задачи через
-    PyrusClient. Пока форма не готова, по каждому найденному лишнему
-    пользователю только логируется алерт с готовым payload — для
-    экспериментов на тестовом шлюзе.
+    Обрабатывает результаты сверки SSH-учетных записей: логирует ALERT по
+    каждому шлюзу с лишними учетками и создает одну задачу Pyrus на весь
+    прогон со всеми найденными проблемами (форма 459137, "ОСУДиИ" ->
+    "Checkpoint Control Config").
     """
     for result in results:
         if result.error:
@@ -317,15 +337,17 @@ def handle_ssh_accounts_results(results: List[SSHAccountsCheckResult]) -> None:
             continue
 
         if result.not_in_ad:
-            payload = build_pyrus_task_payload(result)
             LOG.error(
                 f"ALERT: {result.host} ({result.gateway_ip}) — найдены SSH-учетные записи, "
                 f"отсутствующие в AD-группе '{settings.AD_SSH_GROUP_NAME}' и не входящие "
                 f"в исключения (SERVICE_ACCOUNTS): {result.not_in_ad}"
             )
-            LOG.debug(f"Payload для задачи Pyrus (задача пока не создается): {payload}")
         else:
             LOG.info(f"{result.host}: все именные учетные записи присутствуют в AD-группе")
+
+    rows = build_pyrus_task_rows(results)
+    if rows:
+        create_checkpoint_ssh_accounts_task(rows)
 
 
 def run_ssh_accounts_check():
