@@ -10,7 +10,8 @@ class NetBoxHandler:
         self.nd = pynetbox.api(settings.NETBOX_URL, token=settings.NETBOX_TOKEN, threading=True)
         self.nd.http_session.verify= settings.NETBOX_CERT
         self.tag_mapping = {
-            'checkpoint': ['checkpoint', 'checkpoint-internal']
+            'checkpoint': ['checkpoint', 'checkpoint-internal'],
+            'checkpoint_servers': ['checkpoint', 'checkpoint servers'],
         }
 
     def get_ipaddresses(self, device_key: str, status='active') -> list:
