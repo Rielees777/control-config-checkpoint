@@ -7,8 +7,7 @@
 
 import json
 import time
-from typing import Dict, List, Optional
-from dataclasses import dataclass
+from typing import Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import schedule
@@ -18,9 +17,14 @@ from services.netbox_handler import NetBoxHandler
 from services.splunk_api import SplunkHEC
 from services.ssh_accounts_parser import check_ssh_accounts_against_ad
 from services.interfaces_parser import check_interfaces
+from services.aaa_servers_parser import check_aaa_servers
 from services.pyrus_task_builder import create_checkpoint_control_config_task
 from config.config import settings, splunk_creds
 from config.setup_logger import LOG
+from models.check_result import CheckResult
+from models.ssh_accounts_check_result import SSHAccountsCheckResult
+from models.interfaces_check_result import InterfacesCheckResult
+from models.aaa_servers_check_result import AaaServersCheckResult
 
 
 CHECK_NAME = "allowed-client-any-host"
@@ -29,39 +33,10 @@ SEARCH_STRING = "add allowed-client host any-host"
 # Настройки расписания (время в UTC)
 SCHEDULE_TIME = "09:00"  # Изменить на нужное время в формате HH:MM
 
-# Проверка SSH-учетных записей и интерфейсов запускается по отдельному
-# расписанию, т.к. результат уходит не в Splunk, а в Pyrus (одной общей
-# задачей на обе проверки, см. run_ssh_accounts_check)
+# Проверки SSH-учетных записей, интерфейсов и AAA-серверов запускаются по
+# отдельному расписанию, т.к. результат уходит не в Splunk, а в Pyrus
+# (одной общей задачей на все три проверки, см. run_ssh_accounts_check)
 SSH_ACCOUNTS_SCHEDULE_TIME = "10:00"  # Изменить на нужное время в формате HH:MM
-
-
-@dataclass
-class CheckResult:
-    """Результат проверки конфигурации шлюза."""
-    host: str
-    gateway_ip: str
-    has_any_host: bool
-    error: Optional[str] = None
-
-
-@dataclass
-class SSHAccountsCheckResult:
-    """Результат сверки SSH-учетных записей шлюза со списком пользователей AD."""
-    host: str
-    gateway_ip: str
-    matched: List[str] = None
-    not_in_ad: List[str] = None
-    error: Optional[str] = None
-
-
-@dataclass
-class InterfacesCheckResult:
-    """Результат сверки интерфейсов шлюза с эталонным набором."""
-    host: str
-    gateway_ip: str
-    missing: List[str] = None
-    unexpected: List[str] = None
-    error: Optional[str] = None
 
 
 def get_hostname(chp: CheckPointSSH) -> str:
@@ -405,6 +380,111 @@ def log_interfaces_results(results: List[InterfacesCheckResult]) -> None:
             LOG.info(f"{result.host}: интерфейсы соответствуют эталонному набору")
 
 
+def check_gateway_aaa_servers(gateway_ip: str) -> AaaServersCheckResult:
+    """
+    Подключается к Check Point шлюзу и сверяет его TACACS-серверы AAA с
+    эталонным набором (services.aaa_servers_parser.EXPECTED_AAA_SERVERS).
+
+    Args:
+        gateway_ip: IP-адрес шлюза Check Point
+
+    Returns:
+        AaaServersCheckResult с результатами сверки
+    """
+    try:
+        with CheckPointSSH(gateway_ip) as chp:
+            hostname = get_hostname(chp)
+            LOG.info(f"Проверка AAA-серверов шлюза {hostname} ({gateway_ip})")
+
+            comparison = check_aaa_servers(chp)
+
+            return AaaServersCheckResult(
+                host=hostname,
+                gateway_ip=gateway_ip,
+                missing=comparison["missing"],
+                unexpected=comparison["unexpected"],
+            )
+    except Exception as e:
+        LOG.error(f"Ошибка при проверке AAA-серверов {gateway_ip}: {e}")
+        return AaaServersCheckResult(
+            host=gateway_ip,
+            gateway_ip=gateway_ip,
+            error=str(e),
+        )
+
+
+def check_all_gateways_aaa_servers(
+    gateway_ips: List[str], max_workers: int = 10
+) -> List[AaaServersCheckResult]:
+    """
+    Проверяет AAA-серверы всех указанных шлюзов с использованием потоков.
+
+    Args:
+        gateway_ips: Список IP-адресов шлюзов для проверки
+        max_workers: Максимальное количество одновременных потоков (по умолчанию 10)
+
+    Returns:
+        Список результатов проверки для каждого шлюза
+    """
+    results: List[AaaServersCheckResult] = []
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_ip = {
+            executor.submit(check_gateway_aaa_servers, ip): ip
+            for ip in gateway_ips
+        }
+
+        for future in as_completed(future_to_ip):
+            ip = future_to_ip[future]
+            try:
+                results.append(future.result())
+            except Exception as e:
+                LOG.error(f"Ошибка при проверке AAA-серверов {ip}: {e}")
+                results.append(AaaServersCheckResult(host=ip, gateway_ip=ip, error=str(e)))
+
+    return results
+
+
+def build_pyrus_task_rows_aaa_servers(results: List[AaaServersCheckResult]) -> List[Dict]:
+    """
+    Формирует строки будущей задачи Pyrus (Host/IP/Trouble) по всем
+    найденным за прогон расхождениям в AAA-серверах.
+    """
+    rows = []
+    for result in results:
+        if result.error:
+            continue
+        for server in result.missing:
+            rows.append({
+                "host": result.host,
+                "ip": result.gateway_ip,
+                "trouble": f"Отсутствует ожидаемый TACACS-сервер: {server}",
+            })
+        for server in result.unexpected:
+            rows.append({
+                "host": result.host,
+                "ip": result.gateway_ip,
+                "trouble": f"Обнаружен неожиданный TACACS-сервер: {server}",
+            })
+    return rows
+
+
+def log_aaa_servers_results(results: List[AaaServersCheckResult]) -> None:
+    """Логирует ALERT по каждому шлюзу с расхождениями в AAA-серверах."""
+    for result in results:
+        if result.error:
+            LOG.warning(f"{result.host}: проверка AAA-серверов не выполнена — {result.error}")
+            continue
+
+        if result.missing or result.unexpected:
+            LOG.error(
+                f"ALERT: {result.host} ({result.gateway_ip}) — расхождения в AAA-серверах: "
+                f"отсутствуют {result.missing}, лишние {result.unexpected}"
+            )
+        else:
+            LOG.info(f"{result.host}: AAA-серверы соответствуют эталонному набору")
+
+
 def build_pyrus_task_payload(result: SSHAccountsCheckResult) -> Dict:
     """
     Формирует данные будущей задачи Pyrus по найденным лишним SSH-учетным
@@ -460,13 +540,14 @@ def log_ssh_accounts_results(results: List[SSHAccountsCheckResult]) -> None:
 
 def run_ssh_accounts_check():
     """
-    Выполняет проверку SSH-учетных записей и интерфейсов Check Point
-    шлюзов по единому расписанию: сначала учетные записи, затем
-    интерфейсы. Все найденные за прогон расхождения обоих типов уходят
-    в ОДНУ задачу Pyrus (форма 459137, "ОСУДиИ" -> "Checkpoint Control
-    Config"), чтобы не плодить несколько задач за один прогон.
+    Выполняет проверку SSH-учетных записей, интерфейсов и AAA-серверов
+    Check Point шлюзов по единому расписанию: сначала учетные записи,
+    затем интерфейсы, затем AAA-серверы. Все найденные за прогон
+    расхождения уходят в ОДНУ задачу Pyrus (форма 459137, "ОСУДиИ" ->
+    "Checkpoint Control Config"), чтобы не плодить несколько задач за
+    один прогон.
     """
-    LOG.info("Запуск проверки SSH-учетных записей и интерфейсов Check Point шлюзов")
+    LOG.info("Запуск проверки SSH-учетных записей, интерфейсов и AAA-серверов Check Point шлюзов")
 
     gateway_ips = get_gateways_from_netbox()
     if not gateway_ips:
@@ -479,11 +560,18 @@ def run_ssh_accounts_check():
     interfaces_results = check_all_gateways_interfaces(gateway_ips)
     log_interfaces_results(interfaces_results)
 
-    rows = build_pyrus_task_rows(accounts_results) + build_pyrus_task_rows_interfaces(interfaces_results)
+    aaa_servers_results = check_all_gateways_aaa_servers(gateway_ips)
+    log_aaa_servers_results(aaa_servers_results)
+
+    rows = (
+        build_pyrus_task_rows(accounts_results)
+        + build_pyrus_task_rows_interfaces(interfaces_results)
+        + build_pyrus_task_rows_aaa_servers(aaa_servers_results)
+    )
     if rows:
         create_checkpoint_control_config_task(rows)
 
-    LOG.info("Проверка SSH-учетных записей и интерфейсов завершена")
+    LOG.info("Проверка SSH-учетных записей, интерфейсов и AAA-серверов завершена")
 
 
 def generate_splunk_output(results: List[CheckResult]) -> List[Dict]:

@@ -4,12 +4,12 @@
 именных учетных записей со списком пользователей AD-группы.
 """
 import re
-from dataclasses import dataclass
 from typing import List, Set
 
 from config.setup_logger import LOG
 from services.checkpoint_ssh import CheckPointSSH
 from services.ldap_handler import LDAPRadiusGroups
+from models.ssh_account import SSHAccount
 
 # Сервисные учетные записи, которые не участвуют в сверке с AD
 SERVICE_ACCOUNTS: Set[str] = {
@@ -24,17 +24,6 @@ PERSONAL_ACCOUNT_PREFIX = "n_"
 
 _HEADER_RE = re.compile(r"^User\s+Uid\s+Gid\s+Home\s+Dir\.\s+Shell\s+Real\s+Name\s+Privileges", re.IGNORECASE)
 _SPLIT_RE = re.compile(r"\s{2,}")
-
-
-@dataclass
-class SSHAccount:
-    user: str
-    uid: str
-    gid: str
-    home_dir: str
-    shell: str
-    real_name: str
-    privileges: str
 
 
 def is_service_account(username: str) -> bool:
