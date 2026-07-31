@@ -11,7 +11,7 @@ class NetBoxHandler:
         self.nd.http_session.verify= settings.NETBOX_CERT
         self.tag_mapping = {
             'checkpoint': ['checkpoint', 'checkpoint-internal'],
-            'checkpoint_servers': ['checkpoint', 'checkpoint servers'],
+            'checkpoint_servers': ['checkpoint', 'checkpoint-servers'],
         }
 
     def get_ipaddresses(self, device_key: str, status='active') -> list:
